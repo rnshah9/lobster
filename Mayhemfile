@@ -1,6 +1,5 @@
 project: lobster
 target: lobster
-image: ghcr.io/rnshah9/playground:lobster
 
 cmds:
   - cmd: /repo/bin/lobster @@
