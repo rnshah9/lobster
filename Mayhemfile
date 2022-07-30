@@ -2,4 +2,4 @@ project: lobster
 target: lobster
 
 cmds:
-  - cmd: /repo/bin/lobster @@
+  - cmd: /install/bin/lobster @@
