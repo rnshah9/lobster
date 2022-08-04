@@ -27,11 +27,12 @@ const size_t normal_palette_idx = 1;
 
 extern vector<Palette> palettes;
 
-struct Voxels {
+struct Voxels : lobster::Resource {
     size_t palette_idx;
     bool chunks_skipped = false;
     Chunk3DGrid<uint8_t> grid;
     int idx = 0;
+    string name;
 
     Voxels(const int3 &dim, size_t idx) : palette_idx(idx), grid(dim, transparant) {}
 
@@ -83,18 +84,14 @@ struct Voxels {
         }
         return pi;
     }
+
+    size_t2 MemoryUsage() {
+        // FIXME: does NOT account for shared palettes.
+        return { sizeof(Voxels) + grid.dim.volume() + grid.dim.x * sizeof(void *), 0 };
+    }
 };
 
 namespace lobster {
-
-inline ResourceType *GetVoxelType() {
-    static ResourceType voxel_type = { "voxels", [](void *v) { delete (Voxels *)v; } };
-    return &voxel_type;
-}
-
-inline Voxels &GetVoxels(VM &vm, const Value &res) {
-    return *GetResourceDec<Voxels *>(vm, res, GetVoxelType());
-}
 
 Value CubesFromMeshGen(VM &vm, const DistGrid &grid, int targetgridsize, int zoffset);
 

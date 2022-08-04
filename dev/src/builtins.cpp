@@ -375,7 +375,7 @@ nfr("substring", "s,start,size", "SII", "S",
         iint size = e.ival();
         iint start = s.ival();
         if (size < 0) size = l.sval()->len - start;
-        if (start < 0 || start + size > l.sval()->len)
+        if (start < 0 || size < 0 || start + size > l.sval()->len)
             vm.BuiltinError("substring: values out of range");
 
         auto ns = vm.NewString(string_view(l.sval()->data() + start, (size_t)size));
@@ -445,30 +445,37 @@ nfr("string_to_int", "s,base", "SI?", "IB",
         return Value(end == sv.data() + sv.size());
     });
 
-nfr("string_to_float", "s", "S", "F",
-    "converts a string to a float. returns 0.0 if no numeric data could be parsed",
-    [](StackPtr &, VM &, Value &s) {
-        auto f = strtod(s.sval()->data(), nullptr);
-        return Value(f);
+nfr("string_to_float", "s", "S", "FB",
+    "converts a string to a float. returns 0.0 if no numeric data could be parsed;"
+    "second return value is true if all characters of the string were parsed.",
+    [](StackPtr &sp, VM &, Value &s) {
+        char *end;
+        auto sv = s.sval()->strv();
+        auto f = strtod(sv.data(), &end);
+        Push(sp, f);
+        return Value(end == sv.data() + sv.size());
     });
 
-nfr("tokenize", "s,delimiters,whitespace", "SSS", "S]",
+nfr("tokenize", "s,delimiters,whitespace,dividing", "SSSI?", "S]",
     "splits a string into a vector of strings, by splitting into segments upon each dividing or"
     " terminating delimiter. Segments are stripped of leading and trailing whitespace."
-    " Example: \"; A ; B C; \" becomes [ \"\", \"A\", \"B C\" ] with \";\" as delimiter and"
-    " \" \" as whitespace.",
-    [](StackPtr &, VM &vm, Value &s, Value &delims, Value &whitespace) {
+    " Example: \"; A ; B C;; \" becomes [ \"\", \"A\", \"B C\", \"\" ] with \";\" as delimiter and"
+    " \" \" as whitespace. If dividing was true, there would be a 5th empty string element.",
+    [](StackPtr &, VM &vm, Value &s, Value &delims, Value &whitespace, Value &dividing) {
         auto v = (LVector *)vm.NewVec(0, 0, TYPE_ELEM_VECTOR_OF_STRING);
         auto ws = whitespace.sval()->strv();
         auto dl = delims.sval()->strv();
         auto p = s.sval()->strv();
         p.remove_prefix(std::min(p.find_first_not_of(ws), p.size()));
-        while (!p.empty()) {
+        bool has_delim = false;
+        while (!p.empty() || (has_delim && dividing.True())) {
             auto delim = std::min(p.find_first_of(dl), p.size());
-            auto end = std::min(p.find_last_not_of(ws) + 1, delim);
+            auto delimstr = p.substr(0, delim);
+            auto end = std::min(delimstr.find_last_not_of(ws) + 1, delim);
             v->Push(vm, vm.NewString(string_view(p.data(), end)));
             p.remove_prefix(delim);
-            p.remove_prefix(std::min(p.find_first_not_of(dl), p.size()));
+            has_delim = std::min(p.find_first_not_of(dl), p.size()) != 0;
+            if (has_delim) p.remove_prefix(1);
             p.remove_prefix(std::min(p.find_first_not_of(ws), p.size()));
         }
         return Value(v);
@@ -756,7 +763,7 @@ nfr("magnitude_squared", "v", "F}", "F",
 nfr("magnitude_squared", "v", "I}", "I",
     "the geometric length of a vector squared",
     [](StackPtr &sp, VM &) {
-        auto a = DangleVec<long>(sp);
+        auto a = DangleVec<iint>(sp);
         Push(sp, a.length_squared());
     });
 
@@ -773,6 +780,18 @@ nfr("cross", "a,b", "F}:3F}:3", "F}:3",
         auto b = PopVec<double3>(sp);
         auto a = PopVec<double3>(sp);
         PushVec(sp, cross(a, b));
+    });
+
+nfr("volume", "v", "F}", "F", "the volume of the area spanned by the vector",
+    [](StackPtr &sp, VM &) {
+        auto a = DangleVec<double>(sp);
+        Push(sp, a.volume());
+    });
+
+nfr("volume", "v", "I}", "I", "the volume of the area spanned by the vector",
+    [](StackPtr &sp, VM &) {
+        auto a = DangleVec<iint>(sp);
+        Push(sp, a.volume());
     });
 
 nfr("rnd", "max", "I", "I",
@@ -1200,13 +1219,13 @@ nfr("hash", "v", "I}", "I",
     "hashes a int vector into a positive int",
     [](StackPtr &sp, VM &vm) {
         auto a = DangleVec<iint>(sp);
-        Push(sp, positive_bits(a.hash(vm, V_INT)));
+        Push(sp, positive_bits(a.Hash(vm, V_INT)));
     });
 nfr("hash", "v", "F}", "I",
     "hashes a float vector into a positive int",
     [](StackPtr &sp, VM &vm) {
         auto a = DangleVec<double>(sp);
-        Push(sp, positive_bits(a.hash(vm, V_FLOAT)));
+        Push(sp, positive_bits(a.Hash(vm, V_FLOAT)));
     });
 
 nfr("program_name", "", "", "S",
@@ -1265,10 +1284,26 @@ nfr("date_time_string", "utc", "B?", "S",
     });
 
 nfr("assert", "condition", "A*", "Ab1",
-    "halts the program with an assertion failure if passed false. returns its input",
-    [](StackPtr &, VM &vm, Value &c) {
-        if (c.False()) vm.BuiltinError("assertion failed");
+    "halts the program with an assertion failure if passed false. returns its input."
+    " runtime errors like this will contain a stack trace if --runtime-verbose is on.",
+    [](StackPtr &, VM &, Value &c) {
+        assert(false);  // This builtin implemented as IL_ASSERT.
         return c;
+    });
+
+nfr("get_stack_trace", "", "", "S",
+    "gets a stack trace of the current location of the program (needs --runtime-verbose)"
+    " without actually stopping the program.",
+    [](StackPtr &, VM &vm) {
+        string sd;
+        vm.DumpStackTrace(sd);
+        return Value(vm.NewString(sd));
+    });
+
+nfr("get_memory_usage", "n", "I", "S",
+    "gets a text showing the top n object types that are using the most memory.",
+    [](StackPtr &, VM &vm, Value &n) {
+        return Value(vm.NewString(vm.MemoryUsage(n.intval())));
     });
 
 nfr("pass", "", "", "",

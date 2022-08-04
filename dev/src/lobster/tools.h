@@ -271,6 +271,7 @@ class PCG32 {
 };
 
 // https://thompsonsed.co.uk/random-number-generators-for-c-performance-tested
+// See also SplitMix64Hash below.
 class SplitMix64 {
     uint64_t x = 0; /* The state can be seeded with any value. */
 
@@ -768,6 +769,7 @@ range_wrapper<T> range(const T &end) {
 */
 
 // From: http://reedbeta.com/blog/python-like-enumerate-in-cpp17/
+// FIXME: doesn't work with T* types.
 
 template <typename T,
           typename TIter = decltype(std::begin(std::declval<T>())),
@@ -797,7 +799,7 @@ template<typename T> reversion_wrapper<T> reverse(T &&iterable) { return { itera
 
 // Stops a class from being accidental victim to default copy + destruct twice problem.
 
-class NonCopyable        {
+class NonCopyable {
     NonCopyable(const NonCopyable&) = delete;
     const NonCopyable& operator=(const NonCopyable&) = delete;
 
@@ -824,6 +826,16 @@ inline uint64_t FNV1A64(string_view s) {
     }
     return hash;
 }
+
+// https://nullprogram.com/blog/2018/07/31/
+// See also SplitMix64 RNG above.
+inline uint64_t SplitMix64Hash(uint64_t x) {
+    x = (x ^ (x >> 30)) * UINT64_C(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)) * UINT64_C(0x94D049BB133111EB);
+    return x ^ (x >> 31);
+}
+
+
 
 // dynamic_cast succeeds on both the given type and any derived types, which is frequently
 // undesirable. "is" only succeeds on the exact type given, and is cheaper. It also defaults
@@ -1019,16 +1031,50 @@ template<typename T> T ReadMem(const void *p) {
     return dest;
 }
 
-template<typename T> T ReadMemInc(const uint8_t *&p) {
-    T dest = ReadMem<T>(p);
-    p += sizeof(T);
-    return dest;
-}
-
 template<typename T> void WriteMemInc(uint8_t *&dest, const T &src) {
     memcpy(dest, &src, sizeof(T));
     dest += sizeof(T);
 }
+
+template<typename T> bool ReadSpan(const gsl::span<const uint8_t> p, T &v) {
+    if (p.size_bytes() < sizeof(T))
+        return false;
+    memcpy(&v, p.data(), sizeof(T));
+    return true;
+}
+
+template<typename T> bool ReadSpanInc(gsl::span<const uint8_t> &p, T &v) {
+    if (p.size_bytes() < sizeof(T))
+        return false;
+    memcpy(&v, p.data(), sizeof(T));
+    p = p.subspan(sizeof(T));
+    return true;
+}
+
+template<typename T, typename K = uint64_t> bool ReadSpanVec(gsl::span<const uint8_t> &p, T &v) {
+    K len;
+    if (!ReadSpanInc<K>(p, len))
+        return false;
+    auto blen = len * sizeof(typename T::value_type);
+    if (p.size_bytes() < blen)
+        return false;
+    v.resize((size_t)len);
+    memcpy(v.data(), p.data(), blen);
+    p = p.subspan(blen);
+    return true;
+}
+
+template<typename T, typename K = uint64_t> bool SkipSpanVec(gsl::span<const uint8_t> &p) {
+    K len;
+    if (!ReadSpanInc(p, len))
+        return false;
+    auto blen = len * sizeof(typename T::value_type);
+    if (p.size_bytes() < blen)
+        return false;
+    p = p.subspan(blen);
+    return true;
+}
+
 
 // Enum operators.
 

@@ -351,7 +351,9 @@ struct EnumRef : Node {
 
 struct UDTRef : Node {
     UDT *udt;
-    UDTRef(const Line &ln, UDT *_udt) : Node(ln), udt(_udt) {}
+    bool predeclaration;
+    UDTRef(const Line &ln, UDT *_udt, bool predeclaration)
+        : Node(ln), udt(_udt), predeclaration(predeclaration) {}
     void Dump(string &sd) const { append(sd, udt->is_struct ? "struct " : "class ", udt->name); }
     bool EqAttr(const Node *o) const {
         return udt == ((UDTRef *)o)->udt;
@@ -499,12 +501,11 @@ struct Dot : Unary {
 };
 
 struct IsType : Unary {
-    UnresolvedTypeRef giventype;
-    TypeRef resolvedtype;
-    IsType(const Line &ln, Node *_a) : Unary(ln, _a) {}
-    void Dump(string &sd) const { append(sd, Name(), ":", TypeName(giventype.utr)); }
+    GivenResolve gr;
+    IsType(const Line &ln, Node *_a, UnresolvedTypeRef _type) : Unary(ln, _a), gr(_type) {}
+    void Dump(string &sd) const { append(sd, Name(), ":", TypeName(gr.giventype.utr)); }
     bool EqAttr(const Node *o) const {
-        return giventype.utr->Equal(*((IsType *)o)->giventype.utr);
+        return gr.giventype.utr->Equal(*((IsType *)o)->gr.giventype.utr);
     }
     SHARED_SIGNATURE(IsType, TName(T_IS), false)
 };
@@ -527,7 +528,7 @@ struct ToLifetime : Coercion {
     bool EqAttr(const Node *) const {
         return false;  // FIXME
     }
-    SHARED_SIGNATURE_NO_TT(ToLifetime, "lifetime change", true)
+    SHARED_SIGNATURE_NO_TT(ToLifetime, "lifetime change", false)
 };
 
 inline string DumpNode(Node &n, int indent, bool single_line) {

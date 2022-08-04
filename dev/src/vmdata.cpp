@@ -15,13 +15,14 @@
 #include "lobster/stdafx.h"
 
 #include "lobster/vmdata.h"
+#include "lobster/natreg.h"
 
 namespace lobster {
 
 LString::LString(iint _l) : RefObj(TYPE_ELEM_STRING), len(_l) { ((char *)data())[_l] = 0; }
 
-LResource::LResource(void *v, const ResourceType *t)
-    : RefObj(TYPE_ELEM_RESOURCE), val(v), type(t) {}
+LResource::LResource(const ResourceType *t, Resource *res)
+    : RefObj(TYPE_ELEM_RESOURCE), type(t), res(res) {}
 
 char HexChar(char i) { return i + (i < 10 ? '0' : 'A' - 10); }
 
@@ -176,8 +177,18 @@ void LObject::DeleteSelf(VM &vm) {
 }
 
 void LResource::DeleteSelf(VM &vm) {
-    type->deletefun(val);
+    if (owned) delete res;
     vm.pool.dealloc(this, sizeof(LResource));
+}
+
+LResource *VM::NewResource(const ResourceType *type, Resource *res) {
+    #undef new
+    auto r = new (pool.alloc(sizeof(LResource))) LResource(type, res);
+    #if defined(_MSC_VER) && !defined(NDEBUG)
+        #define new DEBUG_NEW
+    #endif
+    OnAlloc(r);
+    return r;
 }
 
 void RefObj::DECDELETENOW(VM &vm) {
@@ -214,7 +225,7 @@ bool RefEqual(VM &vm, const RefObj *a, const RefObj *b, bool structural) {
         case V_STRING:      return *((LString *)a) == *((LString *)b);
         case V_VECTOR:      return structural && ((LVector *)a)->Equal(vm, *(LVector *)b);
         case V_CLASS:       return structural && ((LObject *)a)->Equal(vm, *(LObject *)b);
-        case V_RESOURCE:    return structural && ((LResource *)a)->val == ((LResource *)b)->val;
+        case V_RESOURCE:    return false;
         default:            assert(0); return false;
     }
 }
@@ -297,25 +308,47 @@ void Value::ToFlexBuffer(VM &vm, flexbuffers::Builder &builder, ValueType t) con
 }
 
 
-iint RefObj::Hash(VM &vm) {
+uint64_t RefObj::Hash(VM &vm) {
     switch (ti(vm).t) {
         case V_STRING:      return ((LString *)this)->Hash();
         case V_VECTOR:      return ((LVector *)this)->Hash(vm);
         case V_CLASS:       return ((LObject *)this)->Hash(vm);
-        default:            return (iint)this;
+        default:            return SplitMix64Hash((uint64_t)this);
     }
 }
 
-iint LString::Hash() {
+uint64_t LString::Hash() {
     return FNV1A64(strv());
 }
 
-iint Value::Hash(VM &vm, ValueType vtype) {
+uint64_t LVector::Hash(VM &vm) {
+    auto &eti = ElemType(vm);
+    auto hash = SplitMix64Hash((uint64_t)(len * width));
+    if (IsStruct(eti.t)) {
+        for (iint i = 0; i < len; i++) {
+            for (int j = 0; j < width; j++) {
+                assert(width == eti.len);
+                auto &ti = vm.GetTypeInfo(eti.elemtypes[j]);
+                hash = hash * 31 + AtSub(i, j).Hash(vm, ti.t);
+            }
+        }
+    } else {
+        for (iint i = 0; i < len; i++) {
+            hash = hash * 31 + At(i).Hash(vm, eti.t);
+        }
+    }
+    return hash;
+}
+
+uint64_t Value::Hash(VM &vm, ValueType vtype) {
     switch (vtype) {
-        case V_INT: return ival_;
-        case V_FLOAT: return ReadMem<iint>(&fval_);
-        case V_FUNCTION: return ival_;
-        default: return refnil() ? ref()->Hash(vm) : 0;
+        case V_INT:
+        case V_FUNCTION:
+            return SplitMix64Hash((uint64_t)ival_);
+        case V_FLOAT:
+            return SplitMix64Hash(ReadMem<uint64_t>(&fval_));
+        default:
+            return refnil() ? ref()->Hash(vm) : 0;
     }
 }
 
@@ -354,27 +387,28 @@ Value Value::CopyRef(VM &vm, bool deep) {
         return Value(s);
     }
     default:
-        assert(false);
+        vm.BuiltinError("Can\'t copy type: " + ti.Debug(vm, false));
         return NilVal();
     }
 }
 
 string TypeInfo::Debug(VM &vm, bool rec) const {
-    string s;
-    s += BaseTypeName(t);
-    if (t == V_VECTOR || t == V_NIL) {
-        s += "[" + vm.GetTypeInfo(subt).Debug(vm, false) + "]";
+    if (t == V_VECTOR) {
+        return cat("[", vm.GetTypeInfo(subt).Debug(vm, false), "]");
+    } else if (t == V_NIL) {
+        return cat(vm.GetTypeInfo(subt).Debug(vm, false), "?");
     } else if (IsUDT(t)) {
-        auto sname = vm.StructName(*this);
-        s += ":" + sname;
+        string s = string(vm.StructName(*this));
         if (rec) {
             s += "{";
             for (int i = 0; i < len; i++)
                 s += vm.GetTypeInfo(elemtypes[i]).Debug(vm, false) + ",";
             s += "}";
         }
+        return s;
+    } else {
+        return string(BaseTypeName(t));
     }
-    return s;
 }
 
 void TypeInfo::Print(VM &vm, string &sd) const {
@@ -479,6 +513,10 @@ void LVector::ToString(VM &vm, string &sd, PrintPrefs &pp) {
     );
 }
 
+void LResource::ToString(string &sd) {
+    append(sd, "(resource:", type->name, ")");
+}
+
 void VM::StructToString(string &sd, PrintPrefs &pp, const TypeInfo &ti, const Value *elems) {
     sd += ReverseLookupType(ti.structidx);
     if (pp.indent) sd += ' ';
@@ -488,7 +526,6 @@ void VM::StructToString(string &sd, PrintPrefs &pp, const TypeInfo &ti, const Va
         }
     );
 }
-
 
 void ElemToFlexBuffer(VM &vm, flexbuffers::Builder &builder, const TypeInfo &ti,
                       iint &i, iint width, const Value *elems, bool is_vector) {

@@ -37,7 +37,7 @@ Lexical definition
 
 -   Keywords: `nil return class struct import int float string any void
     def fn is from program private resource enum enum_flags typeof
-    var let pakfile switch case default namespace not and or`
+    var let pakfile switch case default namespace not and or attribute`
 
 -   Linefeed is whitespace if it follows a token that indicates an incomplete
     expression (such as `+` or `,`) and an actual token otherwise (used to
@@ -61,7 +61,7 @@ stats = topexp … linefeed
 topexp = `namespace` ident
       \|`import` [ `from` ] ( string\_constant \| ( ident ... `.` ) )
       \| [ `private` ] ( functiondef \| class \| vardef \| enumdef )
-      \| expstat
+      \| expstat \| attrdef
 
 class = ( `class` \| `struct` ) ident
         ( `=` ident specializers
@@ -86,7 +86,7 @@ args = [ list( ident [ ( `:` \| `::` ) type ] ) ]
 
 body = ( expstat \| indent stats dedent )
 
-type = `int` \| `float` \| `string` \| `[` type `]` \| `resource` \| `void`
+type = `int` \| `float` \| `string` \| `[` type `]` \| `resource` `<` ident `>` \| `void`
     \| ident
 
 call = specializers `(` [ list( exp ) ] `)` [ block [ `fn` block … ] ]
@@ -112,6 +112,8 @@ constructor = `[` [ list( exp ) ] `]` [ `::` type ] \| ident `{` [ list(
 exp ) ] `}`
 
 constant = numeric\_constant \| string\_constant \| character\_constant \| `nil` [ `::` type ]
+
+attrdef = `attribute` ident [ `=` ( string\_constant \| numeric\_constant \| ident ) ]
 
 indlist(e) = indent list(e) [ linefeed ] dedent linefeed
 
@@ -166,6 +168,13 @@ a value of one of the following types:
         specify a value of type `string?` (a type that denotes the value can be
         a string or nil), though in most cases type inference makes writing
         just `nil` sufficient.
+
+    -   `resource<T>` : an opaque object managed by the engine / C++ code.
+        `T` is the type, e.g. `texture` or `mesh`, the availability of these
+        depends on what engine functionality is linked in to Lobster, see
+        `builtin_functions_reference.html` for what functions create and use
+        these resources. Their lifetime is managed by the language much like
+        other reference types above.
 
 Lobster does not have a built-in boolean type, though it does have a pre-defined
 `bool` enum (see enums below). In general, for boolean tests such
@@ -661,9 +670,10 @@ class A:
 This definition of `f` for `A` is entirely equivalent to the one above, except
 the name of the first argument is now `this` instead of `a` above.
 
-Only the first argument to a function is used to resolve which overload to call,
-either statically or dynamically. Lobster used to have the ability to dispatch on
-all arguments, called "multi-methods", which at least academically seem very elegant.
+Only the first argument to a function is used to resolve dynamic dispatch, but
+for static overloading, all arguments will be taken into consideration.
+Lobster used to have the ability to dispatch on all arguments, called "multi-methods",
+which at least academically seem very elegant.
 In practice however, these are slow (require complicated look-up tables) and ambiguous
 (hard to tell which function will get called, sometimes accidentally combine unrelated
 functions into a multimethod and get unexpected errors or slow-down). Single dispatch
@@ -1022,6 +1032,49 @@ Most built-in functions come with a namespace, such as `gl` etc.
 Namespaces are indistinguishable from identifiers that already have a `_` baked into them,
 except from the fact that these have to be referred to by their full name everywhere, even
 inside the module that defines them.
+
+
+Declaration order
+-----------------
+Lobster is a language that relies heavily on type inference and generic types, and generally
+not requiring you to specify types, the order in which things get type-checked sometimes
+matters.
+
+Lobster type-checks function calls in call order, but type declaration in the order in which
+they are specified in the source code, or imported.
+
+As such, to allow the maximum amount of freedom it what can refer to what, it is recommended
+to import files and declare types (structs and classes) as much as possible in the order of
+dependencies (least dependent things first), and call functions from top level (which triggers
+a lot of use of these types) only after all have been declared.
+
+This is not always possible, so there are ways to declare things ahead of definition, for
+example:
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+class Monster
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+(note the lack of `:` introducing the definition) pre-declares this type, so it can
+be referred to by types defined before `Monster` is finally defined. This allows for
+circular dependancies.
+
+Similarly, you may declare variables before you define them:
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+class World
+var world:World
+
+// Lots of types that may want to access `world` as a global in their methods goes here.
+// Then finally `World` gets defined based on the earlier types.
+
+var world:World = World {}
+world.init()
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It is an error to access `world` by code in between its declaration and definition.
+Typically, all code accessing `world` in any methods in between only gets called
+below, so this works out fine.
 
 
 Type Checking

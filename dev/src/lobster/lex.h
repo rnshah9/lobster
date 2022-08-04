@@ -25,7 +25,12 @@ struct Line {
 
     Line(int _line, int _fileidx) : line(_line), fileidx(_fileidx) {}
 
-    bool operator==(const Line &o) const { return line == o.line && fileidx == o.fileidx; }
+    bool operator==(const Line &o) const {
+        return line == o.line && fileidx == o.fileidx;
+    }
+    bool operator<(const Line &o) const {
+        return fileidx < o.fileidx || (fileidx == o.fileidx && line < o.line);
+    }
 };
 
 struct LoadedFile : Line {
@@ -366,6 +371,7 @@ struct Lex : LoadedFile {
                         case 'a':
                             if (sattr == TName(T_AND)) { cont = true; return T_AND; }
                             if (sattr == TName(T_ANYTYPE)) return T_ANYTYPE;
+                            if (sattr == TName(T_ATTRIBUTE)) return T_ATTRIBUTE;
                             break;
                         case 'b':
                             if (sattr == TName(T_BREAK)) return T_BREAK;
@@ -488,7 +494,10 @@ struct Lex : LoadedFile {
         if (!interp && !character_constant && p[0] == '\"' && p[1] == '\"') {
             p += 2;
             if (*p == '\r') p++;
-            if (*p == '\n') p++;
+            if (*p == '\n') {
+                p++;
+                tokline++;
+            }
             for (;;) {
                 switch (c = *p++) {
                     case '\0':
@@ -646,7 +655,7 @@ struct Lex : LoadedFile {
             }
         }
         //LOG_DEBUG(err);
-        THROW_OR_ABORT(err);
+         THROW_OR_ABORT(err);
     }
 
     void Warn(string_view msg, const Line *ln = nullptr) {

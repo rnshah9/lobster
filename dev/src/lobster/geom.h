@@ -45,14 +45,22 @@ namespace geom {
 #define DOVECF(I, F) { T _ = I; DOVEC(_ = F); return _; }
 #define DOVECB(I, F) { bool _ = I; DOVEC(_ = F); return _; }
 
+
+template<typename T> void default_debug_value(T &a) {
+    a = (T)(0xABADCAFEDEADBEEF >> ((8 - sizeof(T)) * 8));
+}
 union int2float { int i; float f; };
+template<> inline void default_debug_value<float>(float &a) {
+    int2float nan;
+    nan.i = 0x7Fc00000;
+    a = nan.f;
+}
 union int2float64 { int64_t i; double f; };
-inline void default_debug_value(float   &a) { int2float nan; nan.i = 0x7F800001; a = nan.f; }
-inline void default_debug_value(double  &a) { int2float nan; nan.i = 0x7F800001; a = nan.f; }
-inline void default_debug_value(int64_t &a) { a = 0x1BADCAFEABADD00D; }
-inline void default_debug_value(int32_t &a) { a = 0x1BADCAFE; }
-inline void default_debug_value(uint16_t&a) { a = 0x1BAD; }
-inline void default_debug_value(uint8_t &a) { a = 0x1B; }
+template<> inline void default_debug_value<double>(double &a) {
+    int2float64 nan;
+    nan.i = 0x7ff8000000000000;
+    a = nan.f;
+}
 
 template<typename T, int C, int R> class matrix;
 
@@ -327,6 +335,11 @@ template<typename T> T ipow(T base, T exp) {
 template<typename T> int ffloor(T f) { int i = (int)f; return i - (f < i); }
 template<typename T> int fceil(T f) { int i = (int)f; return i + (f > i); }
 
+template<typename T> bool in_range(T x, T range, T bias = 0) {
+    return x >= bias && x < bias + range;
+}
+
+
 template<typename T> int signum(T val) {
     return (T(0) < val) - (val < T(0));
 }
@@ -448,8 +461,14 @@ typedef vec<iint, 4> iint4;
 
 typedef vec<uint8_t, 4> byte4;
 
+typedef vec<size_t, 2> size_t2;
+
 const float4 float4_0 = float4(0.0f);
 const float4 float4_1 = float4(1.0f);
+const float4 float4_x = float4(1, 0, 0, 0);
+const float4 float4_y = float4(0, 1, 0, 0);
+const float4 float4_z = float4(0, 0, 1, 0);
+const float4 float4_w = float4(0, 0, 0, 1);
 
 const float3 float3_0 = float3(0.0f);
 const float3 float3_1 = float3(1.0f);
@@ -550,6 +569,10 @@ struct quat : float4 {
                     w * o.w - x * o.x - y * o.y - z * o.z);
     }
 
+    quat operator*(float f) const {
+        return quat(x * f, y * f, z * f, w * f);
+    }
+
     quat operator-() const { return quat(-xyz(), w); }
 
     void flip() { *this = quat(-(float4)*this); }
@@ -558,6 +581,31 @@ struct quat : float4 {
         return p + cross(xyz(), cross(xyz(), p) + p * w) * 2.0f;
     }
 };
+
+inline quat normalize(const quat &q) { return quat(normalize((float4)q)); }
+
+inline quat linear_lerp(const quat &a, quat b, float f) {
+    if (dot(a, b) < 0.0f) b.flip();
+    return normalize(quat(mix((float4)a, (float4)b, f)));
+}
+
+inline quat spherical_lerp(const quat &from, quat to, float f)
+{
+    auto cosom = dot(from, to);
+    if (cosom < 0.0f) { cosom = -cosom; to.flip(); }
+    quat result;
+    if ((1.0f - cosom) > 1.0e-6f) {
+        const auto omega = acosf(cosom);
+        const auto sinom = sinf(omega);
+        result = from * (sinf((1.0f - f) * omega) / sinom);
+        f = sinf(f * omega) / sinom;
+    }
+    else {
+        result = from * (1.0f - f);
+    }
+    result = result + to * f;
+    return result;
+}
 
 template<typename T, int C, int R> class matrix {
     typedef vec<T,R> V;

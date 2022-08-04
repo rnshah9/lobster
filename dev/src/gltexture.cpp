@@ -14,6 +14,7 @@
 
 #include "lobster/stdafx.h"
 
+#include "lobster/vmdata.h"
 #include "lobster/glinterface.h"
 #include "lobster/glincludes.h"
 
@@ -31,7 +32,12 @@
 const int nummultisamples = 4;
 #endif
 
-Texture CreateTexture(const uint8_t *buf, int3 dim, int tf) {
+OwnedTexture::~OwnedTexture() {
+    DeleteTexture(t);
+}
+
+Texture CreateTexture(string_view name, const uint8_t *buf, int3 dim, int tf) {
+    LOBSTER_FRAME_PROFILE_THIS_FUNCTION;
     int id;
     GL_CALL(glGenTextures(1, (GLuint *)&id));
     assert(id);
@@ -61,7 +67,7 @@ Texture CreateTexture(const uint8_t *buf, int3 dim, int tf) {
         ? GL_R8
         : (IsSRGBMode() ? GL_SRGB8_ALPHA8 : GL_RGBA8);
     auto bufferformat = tf & TF_SINGLE_CHANNEL ? GL_RED : GL_RGBA;
-    auto buffersize = tf & TF_SINGLE_CHANNEL ? sizeof(uint8_t) : sizeof(byte4);
+    auto elemsize = tf & TF_SINGLE_CHANNEL ? sizeof(uint8_t) : sizeof(byte4);
     auto buffercomponent = GL_UNSIGNED_BYTE;
     if ((tf & TF_SINGLE_CHANNEL) && (dim.x & 0x3)) {
         GL_CALL(glPixelStorei(GL_UNPACK_ALIGNMENT, 1));  // Defaults to 4.
@@ -70,7 +76,7 @@ Texture CreateTexture(const uint8_t *buf, int3 dim, int tf) {
         #ifdef PLATFORM_WINNIX
             internalformat = tf & TF_SINGLE_CHANNEL ? GL_R32F : GL_RGBA32F;
             bufferformat = tf & TF_SINGLE_CHANNEL ? GL_RED : GL_RGBA;
-            buffersize = tf & TF_SINGLE_CHANNEL ? sizeof(float) : sizeof(float4);
+            elemsize = tf & TF_SINGLE_CHANNEL ? sizeof(float) : sizeof(float4);
             buffercomponent = GL_FLOAT;
         #else
             assert(false);  // buf points to float data, which we don't support.
@@ -79,7 +85,7 @@ Texture CreateTexture(const uint8_t *buf, int3 dim, int tf) {
     if (tf & TF_DEPTH) {
         internalformat = GL_DEPTH_COMPONENT32F;
         bufferformat = GL_DEPTH_COMPONENT;
-        buffersize = sizeof(float);
+        elemsize = sizeof(float);
         buffercomponent = GL_FLOAT;
     }
     if (tf & TF_MULTISAMPLE) {
@@ -96,7 +102,7 @@ Texture CreateTexture(const uint8_t *buf, int3 dim, int tf) {
 				GL_CALL(glTexImage3D(textype, mipl, internalformat, d.x, d.y, d.z, 0,
 									 bufferformat, buffercomponent, buf));
 				mipl++;
-				buf += d.volume() * buffersize;
+				buf += d.volume() * elemsize;
 			}
 		#else
 			assert(false);
@@ -107,7 +113,7 @@ Texture CreateTexture(const uint8_t *buf, int3 dim, int tf) {
             for (int i = 0; i < texnumfaces; i++) {
                 GL_CALL(glTexImage2D(teximagetype + i, mipl, internalformat, d.x, d.y, 0,
                                      bufferformat, buffercomponent, buf));
-                buf += d.volume() * buffersize;
+                buf += d.volume() * elemsize;
             }
             mipl++;
         }
@@ -119,7 +125,8 @@ Texture CreateTexture(const uint8_t *buf, int3 dim, int tf) {
             GL_CALL(glGenerateMipmap(textype));
     }
     GL_CALL(glBindTexture(textype, 0));
-    return Texture(id, dim);
+    GL_NAME(GL_TEXTURE, id, name);
+    return Texture(id, dim, int(elemsize));
 }
 
 Texture CreateTextureFromFile(string_view name, int tf) {
@@ -156,10 +163,10 @@ Texture CreateTextureFromFile(string_view name, int tf) {
         for (int i = 0; i < 6; i++) {
             memcpy(buf + bsize * i, bufs[i], bsize);
         }
-        tex = CreateTexture(buf, adim, tf);
+        tex = CreateTexture(name, buf, adim, tf);
         free(buf);
     } else {
-        tex = CreateTexture(bufs[0], adim, tf);
+        tex = CreateTexture(name, bufs[0], adim, tf);
     }
     out:
     for (auto b : bufs) stbi_image_free(b);
@@ -178,9 +185,9 @@ void FreeImageFromFile(uint8_t *img) {
     stbi_image_free(img);
 }
 
-Texture CreateBlankTexture(const int2 &size, const float4 &color, int tf) {
+Texture CreateBlankTexture(string_view name, const int2 &size, const float4 &color, int tf) {
     if (tf & TF_MULTISAMPLE) {
-        return CreateTexture(nullptr, int3(size, 0), tf);  // No buffer required.
+        return CreateTexture(name, nullptr, int3(size, 0), tf);  // No buffer required.
     } else {
         auto sz = tf & TF_FLOAT ? sizeof(float4) : sizeof(byte4);
         if (tf & TF_CUBEMAP) sz *= 6;
@@ -190,7 +197,7 @@ Texture CreateBlankTexture(const int2 &size, const float4 &color, int tf) {
             if (tf & TF_FLOAT) ((float4 *)buf)[idx] = color;
             else               ((byte4  *)buf)[idx] = quantizec(color);
         }
-        auto tex = CreateTexture(buf, int3(size, 0), tf);
+        auto tex = CreateTexture(name, buf, int3(size, 0), tf);
         delete[] buf;
         return tex;
     }
@@ -271,6 +278,7 @@ int2 GetFrameBufferSize(const int2 &screensize) {
 
 bool SwitchToFrameBuffer(const Texture &tex, int2 orig_screensize, bool depth, int tf,
                          const Texture &resolvetex, const Texture &depthtex) {
+    LOBSTER_FRAME_PROFILE_THIS_FUNCTION;
 	#ifdef PLATFORM_WINNIX
 		if (!glGenRenderbuffers)
 			return false;

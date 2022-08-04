@@ -15,8 +15,6 @@
 #ifndef LOBSTER_VMDATA
 #define LOBSTER_VMDATA
 
-#include "il.h"
-
 namespace bytecode { struct BytecodeFile; }  // FIXME
 
 namespace lobster {
@@ -50,9 +48,8 @@ namespace lobster {
 
 enum ValueType : int {
     // refc types are negative
-    V_MINVMTYPES = -9,
-    V_ANY = -8,         // any other reference type.
-    V_STACKFRAMEBUF = -7,
+    V_MINVMTYPES = -8,
+    V_ANY = -7,         // any other reference type.
     V_VALUEBUF = -6,    // only used as memory type for vector/coro buffers, not used by Value.
     V_STRUCT_R = -5,
     V_RESOURCE = -4,
@@ -87,7 +84,7 @@ inline bool IsUDT(ValueType t) { return t == V_CLASS || IsStruct(t); }
 
 inline string_view BaseTypeName(ValueType t) {
     static const char *typenames[] = {
-        "any", "<stackframe_buffer>", "<value_buffer>",
+        "any", "<value_buffer>",
         "struct_ref",
         "resource", "string", "class", "vector",
         "nil", "int", "float", "function", "struct_scalar",
@@ -109,15 +106,14 @@ enum type_elem_t : int {  // Strongly typed element of typetable.
     TYPE_ELEM_RESOURCE = 4,
     TYPE_ELEM_ANY = 5,
     TYPE_ELEM_VALUEBUF = 6,
-    TYPE_ELEM_STACKFRAMEBUF = 7,
-    TYPE_ELEM_VECTOR_OF_INT = 8,   // 2 each.
-    TYPE_ELEM_VECTOR_OF_FLOAT = 10,
-    TYPE_ELEM_VECTOR_OF_STRING = 12,
-    TYPE_ELEM_VECTOR_OF_VECTOR_OF_INT = 14,
-    TYPE_ELEM_VECTOR_OF_VECTOR_OF_FLOAT = 16,
-    TYPE_ELEM_VECTOR_OF_RESOURCE = 18,
+    TYPE_ELEM_VECTOR_OF_INT = 7,   // 2 each.
+    TYPE_ELEM_VECTOR_OF_FLOAT = 9,
+    TYPE_ELEM_VECTOR_OF_STRING = 11,
+    TYPE_ELEM_VECTOR_OF_VECTOR_OF_INT = 13,
+    TYPE_ELEM_VECTOR_OF_VECTOR_OF_FLOAT = 15,
+    TYPE_ELEM_VECTOR_OF_RESOURCE = 17,
 
-    TYPE_ELEM_FIXED_OFFSET_END = 20
+    TYPE_ELEM_FIXED_OFFSET_END = 19
 };
 
 struct VM;
@@ -230,7 +226,7 @@ struct RefObj : DynAlloc {
     void DECDELETENOW(VM &vm);
     void DECSTAT(VM &vm);
 
-    iint Hash(VM &vm);
+    uint64_t Hash(VM &vm);
 };
 
 extern bool RefEqual(VM &vm, const RefObj *a, const RefObj *b, bool structural);
@@ -254,29 +250,40 @@ struct LString : RefObj {
     bool operator> (LString &o) { return strv() >  o.strv(); }
     bool operator>=(LString &o) { return strv() >= o.strv(); }
 
-    iint Hash();
+    uint64_t Hash();
+
+    size_t MemoryUsage() {
+        return sizeof(LString) + len + 1;
+    }
 };
 
-// There must be a single of these per type, since they are compared by pointer.
-struct ResourceType {
-    const char *name;
-    void (* deletefun)(void *);
-    void (* newfun)(void *);
+struct ResourceType;
+extern ResourceType *g_resource_type_list;
 
-    ResourceType(const char *n, void (*df)(void *), void (*nf)(void *) = nullptr)
-        : name(n), deletefun(df), newfun(nf) {}
+struct Resource : NonCopyable {
+    virtual ~Resource() {}
+    virtual size_t2 MemoryUsage() {
+        return size_t2(sizeof(Resource), 0);
+    }
 };
 
 struct LResource : RefObj {
-    void *val;
     const ResourceType *type;
+    Resource *res;
+    bool owned = true;
 
-    LResource(void *v, const ResourceType *t);
+    LResource(const ResourceType *t, Resource *res);
 
+    void ToString(string &sd);
     void DeleteSelf(VM &vm);
 
-    void ToString(string &sd) {
-        append(sd, "(resource:", type->name, ")");
+    size_t2 MemoryUsage() {
+        return res->MemoryUsage() + size_t2(sizeof(LResource), 0);
+    }
+
+    LResource *NotOwned() {
+        owned = false;
+        return this;
     }
 };
 
@@ -456,90 +463,20 @@ struct Value {
     void ToFlexBuffer(VM &vm, flexbuffers::Builder &builder, ValueType t) const;
 
     bool Equal(VM &vm, ValueType vtype, const Value &o, ValueType otype, bool structural) const;
-    iint Hash(VM &vm, ValueType vtype);
+    uint64_t Hash(VM &vm, ValueType vtype);
     Value CopyRef(VM &vm, bool deep);
 };
 
-namespace vmath {
-
-template<typename T> T add(Value, Value) {
+template<typename T> T get_T(Value) {
     assert(false);
     return 0;
 }
-template<> inline iint add<iint>(Value a, Value b) {
-    return a.ival() + b.ival();
+template<> inline iint get_T<iint>(Value a) {
+    return a.ival();
 }
-template<> inline double add<double>(Value a, Value b) {
-    return a.fval() + b.fval();
+template<> inline double get_T<double>(Value a) {
+    return a.fval();
 }
-
-template<typename T> T mul(Value, Value) {
-    assert(false);
-    return 0;
-}
-template<> inline iint mul<iint>(Value a, Value b) {
-    return a.ival() * b.ival();
-}
-template<> inline double mul<double>(Value a, Value b) {
-    return a.fval() * b.fval();
-}
-
-template<typename T> T min(Value, Value) {
-    assert(false);
-    return 0;
-}
-template<> inline iint min<iint>(Value a, Value b) {
-    return a.ival() < b.ival() ? a.ival() : b.ival();
-}
-template<> inline double min<double>(Value a, Value b) {
-    return a.fval() < b.fval() ? a.fval() : b.fval();
-}
-
-template<typename T> T max(Value, Value) {
-    assert(false);
-    return 0;
-}
-template<> inline iint max<iint>(Value a, Value b) {
-    return a.ival() < b.ival() ? b.ival() : a.ival();
-}
-template<> inline double max<double>(Value a, Value b) {
-    return a.fval() < b.fval() ? b.fval() : a.fval();
-}
-
-template<typename T> T abs(Value) {
-    assert(false);
-    return 0;
-}
-template<> inline iint abs<iint>(Value a) {
-    return std::abs(a.ival());
-}
-template<> inline double abs<double>(Value a) {
-    return std::abs(a.fval());
-}
-
-template<typename T> T clamp(Value, Value, Value) {
-    assert(false);
-    return 0;
-}
-template<> inline iint clamp<iint>(Value a, Value b, Value c) {
-    return geom::clamp(a.ival(), b.ival(), c.ival());
-}
-template<> inline double clamp<double>(Value a, Value b, Value c) {
-    return geom::clamp(a.fval(), b.fval(), c.fval());
-}
-
-template<typename T> bool in_range(Value, Value, Value) {
-    assert(false);
-    return 0;
-}
-template<> inline bool in_range<iint>(Value x, Value range, Value bias) {
-    return x.ival() >= bias.ival() && x.ival() < bias.ival() + range.ival();
-}
-template<> inline bool in_range<double>(Value x, Value range, Value bias) {
-    return x.fval() >= bias.fval() && x.fval() < bias.fval() + range.fval();
-}
-
-}  // namespace vmath
 
 template<typename T> struct ValueVec {
     Value *vals;
@@ -552,7 +489,7 @@ template<typename T> struct ValueVec {
         assert(o.len == len);
         T r = 0;
         for (iint i = 0; i < len; i++) {
-            r += vmath::mul<T>(vals[i], o.vals[i]);
+            r += get_T<T>(vals[i]) * get_T<T>(o.vals[i]);
         }
         return r;
     }
@@ -568,7 +505,15 @@ template<typename T> struct ValueVec {
     T manhattan() {
         T r = 0;
         for (iint i = 0; i < len; i++) {
-            r += vmath::abs<T>(vals[i]);
+            r += std::abs(get_T<T>(vals[i]));
+        }
+        return r;
+    }
+
+    T volume() {
+        T r = 1;
+        for (iint i = 0; i < len; i++) {
+            r *= get_T<T>(vals[i]);
         }
         return r;
     }
@@ -576,14 +521,14 @@ template<typename T> struct ValueVec {
     void min_assign(ValueVec<T> o) {
         assert(o.len == len);
         for (iint i = 0; i < len; i++) {
-            vals[i] = vmath::min<T>(vals[i], o.vals[i]);
+            vals[i] = std::min(get_T<T>(vals[i]), get_T<T>(o.vals[i]));
         }
     }
 
     void max_assign(ValueVec<T> o) {
         assert(o.len == len);
         for (iint i = 0; i < len; i++) {
-            vals[i] = vmath::max<T>(vals[i], o.vals[i]);
+            vals[i] = std::max(get_T<T>(vals[i]), get_T<T>(o.vals[i]));
         }
     }
 
@@ -597,25 +542,29 @@ template<typename T> struct ValueVec {
     void clamp(ValueVec<T> mi, ValueVec<T> ma) {
         assert(mi.len == len && ma.len == len);
         for (iint i = 0; i < len; i++) {
-            vals[i] = vmath::clamp<T>(vals[i], mi.vals[i], ma.vals[i]);
+            vals[i] = std::clamp(get_T<T>(vals[i]),
+                                 get_T<T>(mi.vals[i]),
+                                 get_T<T>(ma.vals[i]));
         }
     }
 
     bool in_range(ValueVec<T> range, ValueVec<T> bias) {
         assert(range.len == len);
         for (iint i = 0; i < len; i++) {
-            if (!vmath::in_range<T>(vals[i], range.vals[i], bias.len > i ? bias.vals[i] : 0))
+            if (!geom::in_range<T>(get_T<T>(vals[i]),
+                                   get_T<T>(range.vals[i]),
+                                   bias.len > i ? get_T<T>(bias.vals[i]) : 0))
                 return false;
         }
         return true;
     }
 
-    uint64_t hash(VM &vm, ValueType vt) {
-        uint64_t r = 0;
+    uint64_t Hash(VM &vm, ValueType vt) {
+        auto hash = SplitMix64Hash((uint64_t)len);
         for (iint i = 0; i < len; i++) {
-            r ^= vals[i].Hash(vm, vt);
+            hash = hash * 31 + vals[i].Hash(vm, vt);
         }
-        return r;
+        return hash;
     }
 };
 
@@ -656,9 +605,11 @@ struct LObject : RefObj {
         return true;
     }
 
-    iint Hash(VM &vm) {
-        iint hash = 0;
-        for (int i = 0; i < Len(vm); i++) hash ^= AtS(i).Hash(vm, ElemTypeS(vm, i).t);
+    uint64_t Hash(VM &vm) {
+        auto hash = SplitMix64Hash((uint64_t)Len(vm));
+        for (iint i = 0; i < Len(vm); i++) {
+            hash = hash * 31 + AtS(i).Hash(vm, ElemTypeS(vm, i).t);
+        }
         return hash;
     }
 
@@ -676,6 +627,10 @@ struct LObject : RefObj {
         for (iint i = 0; i < len; i++) {
             if (IsRefNil(ElemTypeS(vm, i).t)) AtS(i) = AtS(i).CopyRef(vm, true);
         }
+    }
+
+    size_t MemoryUsage(VM &vm) {
+        return sizeof(LObject) + Len(vm) * sizeof(iint);
     }
 };
 
@@ -796,13 +751,7 @@ struct LVector : RefObj {
         return true;
     }
 
-    iint Hash(VM &vm) {
-        iint hash = 0;
-        assert(width == 1);
-        auto et = ElemType(vm).t;
-        for (int i = 0; i < len; i++) hash ^= At(i).Hash(vm, et);
-        return hash;
-    }
+    uint64_t Hash(VM &vm);
 
     void CopyElemsShallow(Value *from) {
         t_memcpy(v, from, len * width);
@@ -826,6 +775,10 @@ struct LVector : RefObj {
     }
 
     type_elem_t SingleType(VM &vm);
+
+    size_t MemoryUsage() {
+        return sizeof(LVector) + len * width * sizeof(iint);
+    }
 };
 
 struct StackFrame {
@@ -857,16 +810,19 @@ struct TupleSpace {
 };
 
 enum class TraceMode { OFF, ON, TAIL };
+enum { RUNTIME_NO_ASSERT, RUNTIME_ASSERT, RUNTIME_ASSERT_PLUS, RUNTIME_DEBUG };
 
 struct VMArgs {
     NativeRegistry &nfr;
-    string_view programname;
+    string programname;
     const uint8_t *static_bytecode = nullptr;
     size_t static_size = 0;
     vector<string> program_args;
     const fun_base_t *native_vtables = nullptr;
     fun_base_t jit_entry = nullptr;
     TraceMode trace = TraceMode::OFF;
+    bool dump_leaks = true;
+    int runtime_checks = RUNTIME_ASSERT;
 };
 
 struct VM : VMArgs {
@@ -927,8 +883,16 @@ struct VM : VMArgs {
     struct FunStack {
         const int *funstartinfo;
         StackPtr locals;
+        int line;
+        int fileidx;
+        #if LOBSTER_FRAME_PROFILER_FUNCTIONS
+            ___tracy_c_zone_context ctx;
+        #endif
     };
     vector<FunStack> fun_id_stack;
+    #if LOBSTER_FRAME_PROFILER
+        vector<___tracy_source_location_data> pre_allocated_function_locations;
+    #endif
 
     vector<Value> fvar_def_backup;
 
@@ -948,23 +912,32 @@ struct VM : VMArgs {
 
     string_view GetProgramName() { return programname; }
 
+    typedef function<void(VM &, string_view, const TypeInfo &, Value *)> DumperFun;
+    void DumpVar(Value *locals, int idx, int &j, int &jl, const DumperFun &dump);
+    void DumpStackFrame(const int *fip, Value *locals, const DumperFun &dump);
+    pair<string, const int *> DumpStackFrameStart(FunStack &funstackelem);
+    void DumpStackTrace(string &sd);
+
     void DumpVal(RefObj *ro, const char *prefix);
     void DumpLeaks();
+
+    string MemoryUsage(size_t show_max);
 
     string &TraceStream();
 
     void OnAlloc(RefObj *ro);
     LVector *NewVec(iint initial, iint max, type_elem_t tti);
     LObject *NewObject(iint max, type_elem_t tti);
-    LResource *NewResource(void *v, const ResourceType *t);
     LString *NewString(iint l);
     LString *NewString(string_view s);
     LString *NewString(string_view s1, string_view s2);
     LString *ResizeString(LString *s, iint size, int c, bool back);
+    LResource *NewResource(const ResourceType *type, Resource *res);
 
     Value Error(string err);
     Value BuiltinError(string err) { return Error(err); }
     Value SeriousError(string err);
+    Value NormalExit(string err);
     void ErrorBase(const string &err);
     void VMAssert(const char *what);
     void UnwindOnError();
@@ -1071,11 +1044,27 @@ VM_INLINE int RetSlots(VM &vm) {
 }
 
 VM_INLINE void PushFunId(VM &vm, const int *funstart, StackPtr locals) {
-    vm.fun_id_stack.push_back({ funstart, locals });
+    vm.fun_id_stack.push_back({ funstart, locals, vm.last_line, vm.last_fileidx,
+    #if LOBSTER_FRAME_PROFILER_FUNCTIONS
+        , ___tracy_emit_zone_begin(&vm.pre_allocated_function_locations[*funstart], true)
+    #endif
+    });
 }
 VM_INLINE void PopFunId(VM &vm) {
+    #if LOBSTER_FRAME_PROFILER_FUNCTIONS
+        ___tracy_emit_zone_end(vm.fun_id_stack.back().ctx);
+    #endif
     vm.fun_id_stack.pop_back();
 }
+
+#if LOBSTER_FRAME_PROFILER
+VM_INLINE TracyCZoneCtx StartProfile(___tracy_source_location_data *tsld) {
+    return ___tracy_emit_zone_begin(tsld, true);
+}
+VM_INLINE void EndProfile(TracyCZoneCtx ctx) {
+    ___tracy_emit_zone_end(ctx);
+}
+#endif
 
 template<typename T, int N> void PushVec(StackPtr &sp, const vec<T, N> &v, int truncate = 4) {
     auto l = std::min(N, truncate);
@@ -1182,14 +1171,13 @@ inline iint RangeCheck(VM &vm, const Value &idx, iint range, iint bias = 0) {
     return i;
 }
 
-template<typename T> inline T GetResourceDec(VM &vm, const Value &val, const ResourceType *type) {
-    if (val.False())
-        return nullptr;
+
+template<typename T> inline T &GetResourceDec(const Value &val, const ResourceType *type) {
+    assert(val.True());
     auto x = val.xval();
-    if (x->type != type)
-        vm.BuiltinError(string_view("needed resource type: ") + type->name + ", got: " +
-            x->type->name);
-    return (T)x->val;
+    assert(x->type == type);  // If hit, the `R:type` you specified is not the same as `type`.
+    (void)type;
+    return *(T *)x->res;
 }
 
 inline vector<string> ValueToVectorOfStrings(Value &v) {

@@ -52,7 +52,7 @@ constant (e.g. <code>123</code>) or hex digits with a leading
 <li><p>Identifiers made from alpha-numeric characters and the
 <code>_</code> (except no digits for the first character).</p></li>
 <li><p>Keywords:
-<code>nil return class struct import int float string any void     def fn is from program private resource enum enum_flags typeof     var let pakfile switch case default namespace not and or</code></p></li>
+<code>nil return class struct import int float string any void     def fn is from program private resource enum enum_flags typeof     var let pakfile switch case default namespace not and or attribute</code></p></li>
 <li><p>Linefeed is whitespace if it follows a token that indicates an
 incomplete expression (such as <code>+</code> or <code>,</code>) and an
 actual token otherwise (used to separate lists of expressions inside a
@@ -72,7 +72,7 @@ a precedence level difference.</p>
 <p>topexp = <code>namespace</code> ident |<code>import</code> [
 <code>from</code> ] ( string_constant | ( ident … <code>.</code> ) ) | [
 <code>private</code> ] ( functiondef | class | vardef | enumdef ) |
-expstat</p>
+expstat | attrdef</p>
 <p>class = ( <code>class</code> | <code>struct</code> ) ident (
 <code>=</code> ident specializers | [ generics ] <code>:</code> [ ident
 [ specializers ] ] indlist( ident [ <code>:</code> type ] [
@@ -90,8 +90,9 @@ expstat</p>
 ]</p>
 <p>body = ( expstat | indent stats dedent )</p>
 <p>type = <code>int</code> | <code>float</code> | <code>string</code> |
-<code>[</code> type <code>]</code> | <code>resource</code> |
-<code>void</code> | ident</p>
+<code>[</code> type <code>]</code> | <code>resource</code>
+<code>&lt;</code> ident <code>&gt;</code> | <code>void</code> |
+ident</p>
 <p>call = specializers <code>(</code> [ list( exp ) ] <code>)</code> [
 block [ <code>fn</code> block … ] ]</p>
 <p>expstat = ( exp … <code>;</code> ) | <code>return</code> ( [ list(
@@ -116,6 +117,8 @@ ident [ call ] | <code>-&gt;</code> ident | <code>++</code> |
 <code>}</code></p>
 <p>constant = numeric_constant | string_constant | character_constant |
 <code>nil</code> [ <code>::</code> type ]</p>
+<p>attrdef = <code>attribute</code> ident [ <code>=</code> (
+string_constant | numeric_constant | ident ) ]</p>
 <p>indlist(e) = indent list(e) [ linefeed ] dedent linefeed</p>
 <p>list(e) = e … <code>,</code></p>
 <h2 id="types">Types</h2>
@@ -163,6 +166,13 @@ you can use e.g. <code>nil::string</code> to specify a value of type
 <code>string?</code> (a type that denotes the value can be a string or
 nil), though in most cases type inference makes writing just
 <code>nil</code> sufficient.</p></li>
+<li><p><code>resource&lt;T&gt;</code> : an opaque object managed by the
+engine / C++ code. <code>T</code> is the type, e.g. <code>texture</code>
+or <code>mesh</code>, the availability of these depends on what engine
+functionality is linked in to Lobster, see
+<code>builtin_functions_reference.html</code> for what functions create
+and use these resources. Their lifetime is managed by the language much
+like other reference types above.</p></li>
 </ul></li>
 </ul>
 <p>Lobster does not have a built-in boolean type, though it does have a
@@ -548,16 +558,17 @@ declaration, like so:</p>
 <p>This definition of <code>f</code> for <code>A</code> is entirely
 equivalent to the one above, except the name of the first argument is
 now <code>this</code> instead of <code>a</code> above.</p>
-<p>Only the first argument to a function is used to resolve which
-overload to call, either statically or dynamically. Lobster used to have
-the ability to dispatch on all arguments, called “multi-methods”, which
-at least academically seem very elegant. In practice however, these are
-slow (require complicated look-up tables) and ambiguous (hard to tell
-which function will get called, sometimes accidentally combine unrelated
-functions into a multimethod and get unexpected errors or slow-down).
-Single dispatch gives predictable, fast polymorphism that seems to work
-well for most languages, so for the moment, multi-methods are removed
-from the language.</p>
+<p>Only the first argument to a function is used to resolve dynamic
+dispatch, but for static overloading, all arguments will be taken into
+consideration. Lobster used to have the ability to dispatch on all
+arguments, called “multi-methods”, which at least academically seem very
+elegant. In practice however, these are slow (require complicated
+look-up tables) and ambiguous (hard to tell which function will get
+called, sometimes accidentally combine unrelated functions into a
+multimethod and get unexpected errors or slow-down). Single dispatch
+gives predictable, fast polymorphism that seems to work well for most
+languages, so for the moment, multi-methods are removed from the
+language.</p>
 <p>Overloading and dynamic dispatch can even be mixed with type
 specialization (see <a href="type_checker.html">type system</a>),
 meaning you can generate multiple versions of a polymorphic call that do
@@ -849,6 +860,39 @@ this module, but must be referred to as <code>foo_bar</code> and
 <code>_</code> baked into them, except from the fact that these have to
 be referred to by their full name everywhere, even inside the module
 that defines them.</p>
+<h2 id="declaration-order">Declaration order</h2>
+<p>Lobster is a language that relies heavily on type inference and
+generic types, and generally not requiring you to specify types, the
+order in which things get type-checked sometimes matters.</p>
+<p>Lobster type-checks function calls in call order, but type
+declaration in the order in which they are specified in the source code,
+or imported.</p>
+<p>As such, to allow the maximum amount of freedom it what can refer to
+what, it is recommended to import files and declare types (structs and
+classes) as much as possible in the order of dependencies (least
+dependent things first), and call functions from top level (which
+triggers a lot of use of these types) only after all have been
+declared.</p>
+<p>This is not always possible, so there are ways to declare things
+ahead of definition, for example:</p>
+<pre><code>class Monster</code></pre>
+<p>(note the lack of <code>:</code> introducing the definition)
+pre-declares this type, so it can be referred to by types defined before
+<code>Monster</code> is finally defined. This allows for circular
+dependancies.</p>
+<p>Similarly, you may declare variables before you define them:</p>
+<pre><code>class World
+var world:World
+
+// Lots of types that may want to access `world` as a global in their methods goes here.
+// Then finally `World` gets defined based on the earlier types.
+
+var world:World = World {}
+world.init()</code></pre>
+<p>It is an error to access <code>world</code> by code in between its
+declaration and definition. Typically, all code accessing
+<code>world</code> in any methods in between only gets called below, so
+this works out fine.</p>
 <h2 id="type-checking">Type Checking</h2>
 <p>This has its own document, <a href="type_checker.html">here</a>.</p>
 <h2 id="built-in-functions">Built-in Functions</h2>

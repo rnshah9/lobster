@@ -1,13 +1,47 @@
+- trafficsim.lobster(120): error: can't find specialized superclass for `node`
+
+- `sum` and some other std functions run into the int/float constant warning.
+
+- debugger todo
+  - "d" in sample without value?
+  - doesn't show some global constants inited?
+  - tables column widths: https://github.com/ocornut/imgui/issues/5478
+  - Show file/line for exact current position.
+  - Always unfold first stackframe?
+  - Mark all stack-frames up to breakpoint (and maybe assert) as no-inline, then increase limits for all other functions?
+  - Add custom view for textures, or any resource types..
+  - Much like assert, break into debugger on any runtime error, like array out of bounds etc.
+  - Add a small source code view, will help quickly spotting the problem.
+    - Maybe a "Source" treenode at the end of each stack frame item?
+  - Better docs for all this?
+  - Add user-specified UI for structs/classes?
+  - just omit uninit vars? but only in debug...
+  - A debugging mode where a breakpoint can be set when the programming is already running?
+    Would be expensive to have a breakpoint check between every statement..
+    But this would enable traditional step by step debugging.
+
+- `remove` shows a default value of `0` in the docs, could add integer defaults to the type string.
+
+- continue vmcore experiment.
+
+- Inline tocpp into codegen, see below.
+
 - "C-style language to Lobster Cheat Sheet" contains instances of :=
   and probably could use other fixes.. ?: example? more about types.
+  Also def for function values.
 
-- stack traces for asserts and other runtime errors
-
-- a function to show memory usage by type
-
-- move this TODO.txt to github issues.
+- move this TODO.txt to github issues?
+  - That's going to create 100+ issues, and not necessarily easier to overview since github doesn't have a good way to
+    order issues by priority, and search for things.
+  - Right now, searches for keywords hit both code and this TODO.txt.
 
 - move function checking into typechecker.
+    - the biggest issue is that it first selects on args, then on 1st arg type, it should be the other
+      way around. Parser needs to stop trying to select Function based on args, and typechecker should
+      first filter on type (important: foo.unknown should complain about unknown, not about foo because
+      some completely unrelated type has an unknown defined on it).
+      Possibly not separate Function on args in the first place. different scopes
+      should have completely separate set of functions.
     - generally having all functions global is a big source of confusion, should have methods separate.
     - problematic error:
         error: no version of function `f` takes 0 arguments
@@ -88,6 +122,37 @@
       a = val {}
   (assert a).x
 
+- This complains about `a` being nillable in the else branch:
+    var a:string? = "a"
+    if a:
+        if seconds_elapsed():
+            a = nil
+        else:
+            print a.substring(0, 1)
+  If you switch the two branch blocks it works fine.
+  The problem is that AssignFlowDemote for `a = nil` has to conservatively reset a's promotion to non-nil,
+  which then also holds for the else branch. Same thing happens across switch cases.
+  A real solution would be some kind of "pending demotions" scope around the whole inner-if that
+  gets applied at the end of the inner-if. Meanwhile, the demotion still has to hold for any code
+  in the same block as `a = nil`, so demotions should should be added to the flowstack also rather
+  than only invalidating past promotions.
+  For single block scopes like for/while it doesn't matter, but probably should use the same delayed
+  demotion system for consistency.
+
+- Since we compile on the fly, we can actually add a library like
+  https://github.com/Celtoys/Remotery 2K*thing 
+  https://github.com/wolfpld/tracy 4K*
+  https://github.com/zeux/microprofile 400*
+  https://optick.dev/ (free for commercial use, no opengl profiling) 2K*
+  https://github.com/yse/easy_profiler 2K*
+  https://github.com/google/orbit (sampling only) 2K*
+  https://superluminal.eu/ (commercial, only pdb based)
+  https://www.puredevsoftware.com/framepro/index.htm (commercial)
+  http://www.radgametools.com/telemetry.htm (commercial)
+  and insert an instrumented scope for every single compiled function conditionally when --profile
+  is supplied or whatever, and get very real stats on what is using CPU (and opengl GPU).
+  Additionally allow explicitly scoped blocks from Lobster.
+
 - use this instead of the current lib for span? supposedly better than the std version:
   https://github.com/abseil/abseil-cpp/blob/master/absl/types/span.h
 
@@ -149,6 +214,13 @@
         var s = "                           "
         s = write_int8_le(s, i, 'A' + i)
         print s
+- It may be worth separating out strings from buffers, that way we can do zero-copy-alloc
+  string views onto buffers which is really the ultimate way a language can do strings:
+  https://twitter.com/wvo/status/1535311563992666112
+  Thing is, the ideal view type would be
+  struct string: s:string_buffer, offset:int, size:int
+  and making all string functions take this struct may be troublesome?
+  Can also make it heap allocated for now since these are still cheap since they're small & fixed size.
 
 - Should we specialize own vs borrow on a per string constant basis?
 
@@ -268,7 +340,6 @@
   the optimisations this has specifically for string keys etc.
   Also, int3/float3 can be very useful as keys and would want to support.
   dictionary.lobster is already nicely generic if constant speed is not too important.
-  may want to update my builtin Hash for integers with robin_hood::hash
 
 - stefandd: multiple assign doesn't work on fields.
 
@@ -276,6 +347,11 @@
 
 - See if audio works again under emscripten:
   https://github.com/emscripten-ports/SDL2/commit/865eaddffed50dbd13e6564c3f73902472cf74e8
+
+- If we want a replacement for SDLMixer:
+  https://miniaud.io/
+  - 3D spatialization built-in.
+  - supports ogg thru stb_vorbis
 
 - enums
   - mortimersnerd: get min/max
@@ -512,6 +588,13 @@
   make it such you can only use one style per file
 
 - run coverage to see where more tests are needed.
+
+- Would be nice to merge Texture and OwnedTexture, since they are generally owned by Lobster
+  code.. exceptions are Textured and SwitchToFrameBuffer where we have weak references to
+  Texture.. this could be cleaned up by making these locations do inc/decref, but that
+  means a Resource should hold a ref to LResource to get to refc, and gltexture.cpp now relies
+  on Lobster refcounting etc.
+  Or, give Resource its own refc, such that if LResource drops to 0 it only decrements Resource.
 
 - Remove exceptions completely by making each function call always check for a target function,
   and then make runtime errors use the same mechanism
