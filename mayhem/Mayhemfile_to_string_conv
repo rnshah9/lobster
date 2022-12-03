@@ -1,0 +1,6 @@
+project: lobster
+target: to-string-conv
+
+cmds:
+  - cmd: /fuzz
+    libfuzzer: true
