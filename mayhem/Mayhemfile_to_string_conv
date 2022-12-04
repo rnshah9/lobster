@@ -2,5 +2,5 @@ project: lobster
 target: to-string-conv
 
 cmds:
-  - cmd: /fuzz
+  - cmd: /fuzz_to_string_conv
     libfuzzer: true
